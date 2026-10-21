@@ -4,6 +4,36 @@ import Metal
 import QuartzCore
 import VideoToolbox
 
+/// Logs to NSLog and appends to ~/Library/Logs/RustDesk/hdr_view.log, so the
+/// HDR path can be diagnosed however RustDesk was started.
+private let hdrLogLock = NSLock()
+private var hdrLogHandle: FileHandle? = {
+    let dir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/RustDesk", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let url = dir.appendingPathComponent("hdr_view.log")
+    if !FileManager.default.fileExists(atPath: url.path) {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+    let handle = try? FileHandle(forWritingTo: url)
+    handle?.seekToEndOfFile()
+    return handle
+}()
+private let hdrLogDate: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    return f
+}()
+
+func hdrLog(_ format: String, _ args: CVarArg...) {
+    let message = String(format: format, arguments: args)
+    NSLog("hdr_view: %@", message)
+    hdrLogLock.lock()
+    defer { hdrLogLock.unlock() }
+    let line = "\(hdrLogDate.string(from: Date())) [\(ProcessInfo.processInfo.processIdentifier)] \(message)\n"
+    if let data = line.data(using: .utf8) { hdrLogHandle?.write(data) }
+}
+
 /// Decodes Annex-B HEVC access units (Main10, BT.2020/PQ) with VideoToolbox
 /// and draws them into an EDR CAMetalLayer.
 ///
@@ -38,6 +68,7 @@ public final class HdrStreamRenderer {
     private var parameterSets: [Data] = []
     private var waitingForKeyframe = true
     private var decodeErrors = 0
+    private var lastPixelBuffer: CVPixelBuffer?
 
     public init() {
         layer = CAMetalLayer()
@@ -50,9 +81,10 @@ public final class HdrStreamRenderer {
         layer.isOpaque = true
         device = MTLCreateSystemDefaultDevice()
         queue = device?.makeCommandQueue()
+        hdrLog("renderer: Metal EDR v2, device %@", device?.name ?? "none")
         layer.device = device
         guard let device = device else {
-            NSLog("hdr_view: no Metal device")
+            hdrLog("no Metal device")
             return
         }
         var cache: CVMetalTextureCache?
@@ -66,7 +98,7 @@ public final class HdrStreamRenderer {
             desc.colorAttachments[0].pixelFormat = .rgba16Float
             pipeline = try device.makeRenderPipelineState(descriptor: desc)
         } catch {
-            NSLog("hdr_view: Metal pipeline failed: %@", "\(error)")
+            hdrLog("Metal pipeline failed: %@", "\(error)")
         }
     }
 
@@ -110,12 +142,12 @@ public final class HdrStreamRenderer {
             guard isKey else {
                 dropped += 1
                 if dropped == 1 || dropped % 120 == 0 {
-                    NSLog("hdr_view: waiting for keyframe, dropped %d", dropped)
+                    hdrLog("waiting for keyframe, dropped %d", dropped)
                 }
                 return false
             }
             waitingForKeyframe = false
-            NSLog("hdr_view: keyframe, format description %@", formatDescription == nil ? "missing" : "ok")
+            hdrLog("keyframe, format description %@", formatDescription == nil ? "missing" : "ok")
         }
         guard let fd = formatDescription, !slices.isEmpty,
               let sample = Self.makeSampleBuffer(slices, format: fd),
@@ -131,6 +163,7 @@ public final class HdrStreamRenderer {
             guard let self = self else { return }
             if status == noErr, let pixelBuffer = imageBuffer {
                 shown = self.draw(pixelBuffer)
+                self.lastPixelBuffer = pixelBuffer
             } else {
                 self.noteDecodeError(status)
             }
@@ -144,8 +177,11 @@ public final class HdrStreamRenderer {
         }
         if shown {
             presented += 1
+            if let pb = lastPixelBuffer, presented == 1 || presented % 150 == 0 {
+                measure(pb)
+            }
             if presented == 1 || presented % 600 == 0 {
-                NSLog("hdr_view: presented %d, drawable %.0fx%.0f, headroom %.2f, white %.0f nits",
+                hdrLog("presented %d, drawable %.0fx%.0f, headroom %.2f, white %.0f nits",
                       presented, layer.drawableSize.width, layer.drawableSize.height,
                       headroom, whiteNits)
             }
@@ -174,11 +210,11 @@ public final class HdrStreamRenderer {
             imageBufferAttributes: attributes as CFDictionary, outputCallback: nil,
             decompressionSessionOut: &created)
         if status != noErr {
-            NSLog("hdr_view: VTDecompressionSessionCreate failed: %d", status)
+            hdrLog("VTDecompressionSessionCreate failed: %d", status)
             return nil
         }
         session = created
-        NSLog("hdr_view: decoder session created")
+        hdrLog("decoder session created")
         return created
     }
 
@@ -190,8 +226,60 @@ public final class HdrStreamRenderer {
     private func noteDecodeError(_ status: OSStatus) {
         decodeErrors += 1
         if decodeErrors == 1 || decodeErrors % 120 == 0 {
-            NSLog("hdr_view: decode error %d (count %d)", status, decodeErrors)
+            hdrLog("decode error %d (count %d)", status, decodeErrors)
         }
+    }
+
+
+    /// Logs what the shader outputs for a 9x9 grid of samples of `pb`, in EDR
+    /// units (1.0 = the Mac's SDR white). A white host window shows up as
+    /// samples near 1.0.
+    private func measure(_ pb: CVPixelBuffer) {
+        guard CVPixelBufferLockBaseAddress(pb, .readOnly) == kCVReturnSuccess else { return }
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let yBase = CVPixelBufferGetBaseAddressOfPlane(pb, 0),
+              let cBase = CVPixelBufferGetBaseAddressOfPlane(pb, 1) else { return }
+        let w = CVPixelBufferGetWidthOfPlane(pb, 0)
+        let h = CVPixelBufferGetHeightOfPlane(pb, 0)
+        let yStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        let cStride = CVPixelBufferGetBytesPerRowOfPlane(pb, 1)
+        let white = whiteNits
+        func edr(_ x: Int, _ y: Int) -> (Float, Float, Float) {
+            let yv = yBase.load(fromByteOffset: y * yStride + x * 2, as: UInt16.self)
+            let cOff = (y / 2) * cStride + (x / 2) * 4
+            let cb = cBase.load(fromByteOffset: cOff, as: UInt16.self)
+            let cr = cBase.load(fromByteOffset: cOff + 2, as: UInt16.self)
+            let Y = (Float(yv >> 6) - 64) / 876
+            let Cb = (Float(cb >> 6) - 512) / 896
+            let Cr = (Float(cr >> 6) - 512) / 896
+            let e = [Y + 1.4746 * Cr, Y - 0.164553 * Cb - 0.571353 * Cr, Y + 1.8814 * Cb]
+            let n = e.map { Self.pqToNits(min(max($0, 0), 1)) / white }
+            return (n[0], n[1], n[2])
+        }
+        var nearWhite = 0, brighter = 0
+        var maxV: (Float, Float, Float) = (0, 0, 0)
+        for gy in 1...9 {
+            for gx in 1...9 {
+                let v = edr(gx * w / 10, gy * h / 10)
+                let m = max(v.0, v.1, v.2)
+                if abs(v.0 - 1) < 0.05 && abs(v.1 - 1) < 0.05 && abs(v.2 - 1) < 0.05 { nearWhite += 1 }
+                if m > 1.05 { brighter += 1 }
+                if m > max(maxV.0, maxV.1, maxV.2) { maxV = v }
+            }
+        }
+        let c = edr(w / 2, h / 2)
+        hdrLog("measure %dx%d: center EDR %.3f %.3f %.3f, max %.3f %.3f %.3f, %d/81 at white, %d/81 above white, headroom %.2f",
+               w, h, c.0, c.1, c.2, maxV.0, maxV.1, maxV.2, nearWhite, brighter, headroom)
+    }
+
+    static func pqToNits(_ e: Float) -> Float {
+        let m1: Float = 2610.0 / 16384.0
+        let m2: Float = 2523.0 / 4096.0 * 128.0
+        let c1: Float = 3424.0 / 4096.0
+        let c2: Float = 2413.0 / 4096.0 * 32.0
+        let c3: Float = 2392.0 / 4096.0 * 32.0
+        let p = powf(e, 1 / m2)
+        return 10000 * powf(max(p - c1, 0) / (c2 - c3 * p), 1 / m1)
     }
 
     private func draw(_ pixelBuffer: CVPixelBuffer) -> Bool {
@@ -337,7 +425,7 @@ public final class HdrStreamRenderer {
             }
         }
         if status != noErr {
-            NSLog("hdr_view: CMVideoFormatDescriptionCreateFromHEVCParameterSets failed: %d", status)
+            hdrLog("CMVideoFormatDescriptionCreateFromHEVCParameterSets failed: %d", status)
             return nil
         }
         return fd

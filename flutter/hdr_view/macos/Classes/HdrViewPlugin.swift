@@ -27,7 +27,7 @@ final class HdrViewRegistry {
         let first = missingLogged.insert(key).inserted
         let known = Array(renderers.keys)
         lock.unlock()
-        if first { NSLog("hdr_view: no view for key %@, views: %@", key, known.description) }
+        if first { hdrLog("no view for key %@, views: %@", key, known.description) }
     }
 
     func remove(_ key: String, ifSame renderer: HdrStreamRenderer) {
@@ -54,7 +54,7 @@ final class HdrNativeView: NSView {
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.addSublayer(renderer.layer)
         HdrViewRegistry.shared.set(key, renderer)
-        NSLog("hdr_view: created view %@", key)
+        hdrLog("created view %@", key)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -82,7 +82,7 @@ final class HdrNativeView: NSView {
         CATransaction.commit()
         if bounds.size != loggedSize {
             loggedSize = bounds.size
-            NSLog("hdr_view: %@ frame %.0fx%.0f scale %.1f", key, bounds.width, bounds.height,
+            hdrLog("%@ frame %.0fx%.0f scale %.1f", key, bounds.width, bounds.height,
                   renderer.layer.contentsScale)
         }
     }
