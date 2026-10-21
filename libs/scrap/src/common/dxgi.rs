@@ -66,6 +66,11 @@ impl TraitCapturer for Capturer {
     fn set_output_texture(&mut self, texture: bool) {
         self.inner.set_output_texture(texture);
     }
+
+    #[cfg(feature = "vram")]
+    fn set_hdr_passthrough(&mut self, hdr: bool) {
+        self.inner.set_hdr_passthrough(hdr);
+    }
 }
 
 pub struct PixelBuffer<'a> {

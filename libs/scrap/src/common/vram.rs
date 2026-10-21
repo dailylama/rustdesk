@@ -45,6 +45,8 @@ pub struct VRamEncoderConfig {
     pub quality: f32,
     pub feature: FeatureContext,
     pub keyframe_interval: Option<usize>,
+    /// HDR10 pass-through: the capturer hands over BT.2020 PQ textures.
+    pub hdr: bool,
 }
 
 pub struct VRamEncoder {
@@ -79,7 +81,12 @@ impl EncoderApi for VRamEncoder {
                         gop,
                     },
                 };
-                match Encoder::new(ctx.clone()) {
+                let encoder = if config.hdr {
+                    Encoder::new_hdr(ctx.clone())
+                } else {
+                    Encoder::new(ctx.clone())
+                };
+                match encoder {
                     Ok(encoder) => Ok(VRamEncoder {
                         encoder,
                         ctx,

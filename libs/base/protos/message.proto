@@ -666,6 +666,8 @@ message SupportedDecoding {
   int32 ability_av1 = 6;
   CodecAbility i444 = 7;
   Chroma prefer_chroma = 8;
+  // Controller renders HEVC Main10 BT.2020 PQ (HDR10) natively.
+  bool hdr = 9;
 }
 
 message OptionMessage {

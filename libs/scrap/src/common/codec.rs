@@ -418,6 +418,21 @@ impl Encoder {
         };
         prefer_i444 && i444_useable && !decodings.is_empty()
     }
+
+    /// HDR10 pass-through: every controller renders HDR10 and this display's
+    /// encoder is NVIDIA HEVC.
+    #[cfg(feature = "vram")]
+    pub fn use_hdr(feature: &hwcodec::vram::FeatureContext) -> bool {
+        #[cfg(dxgi)]
+        if crate::dxgi::hdr::UNAVAILABLE.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let decodings = PEER_DECODINGS.lock().unwrap();
+        !decodings.is_empty()
+            && decodings.values().all(|d| d.hdr)
+            && feature.data_format == hwcodec::common::DataFormat::H265
+            && feature.vendor == hwcodec::common::Driver::NV
+    }
 }
 
 impl Decoder {

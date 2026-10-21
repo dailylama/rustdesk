@@ -69,6 +69,7 @@ pub struct Capturer {
     rotate: Rotate,
     frame_state: FrameState,
     hdr: Option<hdr::HdrToSdr>,
+    hdr_passthrough: bool,
 }
 
 impl Capturer {
@@ -188,6 +189,7 @@ impl Capturer {
             rotate,
             frame_state: FrameState::Idle,
             hdr: None,
+            hdr_passthrough: false,
         })
     }
 
@@ -437,6 +439,32 @@ impl Capturer {
         self.output_texture = texture;
     }
 
+    /// Texture output becomes BT.2020 PQ R10G10B10A2 for the HDR10 encoder,
+    /// whether the desktop is HDR, Advanced Color SDR or plain SDR.
+    #[cfg(feature = "vram")]
+    pub fn set_hdr_passthrough(&mut self, hdr: bool) {
+        self.hdr_passthrough = hdr;
+    }
+
+    unsafe fn to_pq(
+        &mut self,
+        source: *mut ID3D11Texture2D,
+        desc: &D3D11_TEXTURE2D_DESC,
+    ) -> io::Result<*mut ID3D11Texture2D> {
+        if self.hdr.is_none() {
+            self.hdr = Some(hdr::HdrToSdr::new(
+                self.device.0,
+                self.context.0,
+                self.display.inner.0,
+                &self.display.desc.DeviceName,
+            )?);
+        }
+        match self.hdr.as_mut() {
+            Some(hdr) => hdr.convert_pq(source, desc),
+            None => Err(io::Error::new(io::ErrorKind::Other, "no HDR converter")),
+        }
+    }
+
     unsafe fn load_frame(&mut self, timeout: UINT) -> io::Result<(*const u8, i32)> {
         if self.duplication.0.is_null() {
             return Err(io::ErrorKind::AddrNotAvailable.into());
@@ -615,7 +643,11 @@ impl Capturer {
 
             let mut frame_desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
             (*self.texture.0).GetDesc(&mut frame_desc);
-            if frame_desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
+            if self.hdr_passthrough {
+                let converted = self.to_pq(self.texture.0, &frame_desc)?;
+                (*converted).AddRef();
+                self.texture = ComPtr(converted);
+            } else if frame_desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
                 let converted = self.tonemap(self.texture.0, &frame_desc)?;
                 (*converted).AddRef();
                 self.texture = ComPtr(converted);

@@ -40,7 +40,10 @@ use winapi::{
         dxgi::{CreateDXGIFactory1, IDXGIFactory1, IID_IDXGIFactory1, DXGI_OUTPUT_DESC},
         dxgi1_2::IDXGIOutput1,
         dxgi1_6::{IDXGIOutput6, IID_IDXGIOutput6, DXGI_OUTPUT_DESC1},
-        dxgiformat::DXGI_FORMAT_B8G8R8A8_UNORM,
+        dxgiformat::{
+            DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+        },
         dxgitype::{DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_SAMPLE_DESC},
         minwindef::{FALSE, LPCVOID, UINT, ULONG},
         ntdef::{LONG, LPCSTR, WCHAR},
@@ -88,6 +91,40 @@ float4 main(float4 pos : SV_Position) : SV_Target {
     return float4(lerp(hi, lo, step(lin, 0.0031308)), 1.0);
 }";
 
+// HDR pass-through: BT.2020 primaries, SMPTE 2084 (PQ) encoded, for the HDR10
+// encoder. The host's SDR white is placed at the BT.2408 reference white of
+// 203 nits so desktop UI lands at the viewer's SDR white and only content the
+// host shows brighter than SDR white uses the viewer's HDR headroom.
+const PQ_COMMON: &str = "\
+#define REF_WHITE_NITS 203.0
+float3 to_bt2020_pq(float3 rgb709, float scale) {
+    float3 c = max(float3(
+        dot(float3(0.6274040, 0.3292820, 0.0433136), rgb709),
+        dot(float3(0.0690970, 0.9195400, 0.0113612), rgb709),
+        dot(float3(0.0163916, 0.0880132, 0.8955950), rgb709)), 0.0);
+    float3 y = pow(saturate(c * (REF_WHITE_NITS * scale / 10000.0)), 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
+}
+";
+
+// scRGB FP16 source. `inv_sdr_white` maps the host's SDR white to 1.0 (it is
+// 1.0 on Advanced Color SDR desktops, where 1.0 already is reference white).
+const PS_PQ_FLOAT_SRC: &str = "\
+Texture2D<float4> src : register(t0);
+cbuffer Params : register(b0) { float inv_sdr_white; float3 pad; };
+float4 main(float4 pos : SV_Position) : SV_Target {
+    return float4(to_bt2020_pq(src.Load(int3(pos.xy, 0)).rgb, inv_sdr_white), 1.0);
+}";
+
+// sRGB BGRA8 source (SDR desktop while an HDR session is active).
+const PS_PQ_SRGB_SRC: &str = "\
+Texture2D<float4> src : register(t0);
+float4 main(float4 pos : SV_Position) : SV_Target {
+    float3 s = saturate(src.Load(int3(pos.xy, 0)).rgb);
+    float3 lin = lerp(pow((s + 0.055) / 1.055, 2.4), s / 12.92, step(s, 0.04045));
+    return float4(to_bt2020_pq(lin, 1.0), 1.0);
+}";
+
 const OUTPUT_STATE_REFRESH: Duration = Duration::from_secs(1);
 
 pub struct HdrToSdr {
@@ -95,8 +132,11 @@ pub struct HdrToSdr {
     context: ComPtr<ID3D11DeviceContext>,
     vs: ComPtr<ID3D11VertexShader>,
     ps: ComPtr<ID3D11PixelShader>,
+    ps_pq_float: ComPtr<ID3D11PixelShader>,
+    ps_pq_srgb: ComPtr<ID3D11PixelShader>,
     params: ComPtr<ID3D11Buffer>,
     target: ComPtr<ID3D11Texture2D>,
+    target_format: DXGI_FORMAT,
     rtv: ComPtr<ID3D11RenderTargetView>,
     srv: ComPtr<ID3D11ShaderResourceView>,
     // Texture `srv` was created for. The view keeps it alive, so the address
@@ -157,6 +197,16 @@ impl HdrToSdr {
                 "CreatePixelShader",
             )?;
             let ps = ComPtr(ps);
+            let ps_pq_float = create_pixel_shader(
+                device.0,
+                compile,
+                &format!("{PQ_COMMON}{PS_PQ_FLOAT_SRC}"),
+            )?;
+            let ps_pq_srgb = create_pixel_shader(
+                device.0,
+                compile,
+                &format!("{PQ_COMMON}{PS_PQ_SRGB_SRC}"),
+            )?;
 
             // Not found leaves the factory null, so the first refresh enumerates
             // again instead of trusting the capturer's possibly stale output.
@@ -207,8 +257,11 @@ impl HdrToSdr {
                 context,
                 vs,
                 ps,
+                ps_pq_float,
+                ps_pq_srgb,
                 params,
                 target: ComPtr(ptr::null_mut()),
+                target_format: DXGI_FORMAT_B8G8R8A8_UNORM,
                 rtv: ComPtr(ptr::null_mut()),
                 srv: ComPtr(ptr::null_mut()),
                 srv_source: ptr::null_mut(),
@@ -234,7 +287,7 @@ impl HdrToSdr {
     ) -> io::Result<*mut ID3D11Texture2D> {
         unsafe {
             self.refresh_output_state();
-            self.ensure_target(desc.Width, desc.Height)?;
+            self.ensure_target(desc.Width, desc.Height, DXGI_FORMAT_B8G8R8A8_UNORM)?;
             self.ensure_source_view(source)?;
 
             let ctx = self.context.0;
@@ -271,8 +324,61 @@ impl HdrToSdr {
         }
     }
 
-    unsafe fn ensure_target(&mut self, width: u32, height: u32) -> io::Result<()> {
-        if !self.target.is_null() && self.width == width && self.height == height {
+    /// HDR pass-through: renders `source` (scRGB R16G16B16A16_FLOAT or sRGB
+    /// B8G8R8A8_UNORM) into an owned BT.2020 PQ R10G10B10A2_UNORM texture of
+    /// the same size and returns it. The texture stays valid until the next call.
+    pub fn convert_pq(
+        &mut self,
+        source: *mut ID3D11Texture2D,
+        desc: &D3D11_TEXTURE2D_DESC,
+    ) -> io::Result<*mut ID3D11Texture2D> {
+        unsafe {
+            let ps = match desc.Format {
+                DXGI_FORMAT_R16G16B16A16_FLOAT => self.ps_pq_float.0,
+                DXGI_FORMAT_B8G8R8A8_UNORM => self.ps_pq_srgb.0,
+                format => return Err(other(format!("HDR pass-through: unsupported source format {format}"))),
+            };
+            self.refresh_output_state();
+            self.ensure_target(desc.Width, desc.Height, DXGI_FORMAT_R10G10B10A2_UNORM)?;
+            self.ensure_source_view(source)?;
+
+            let ctx = self.context.0;
+            let rtv = self.rtv.0;
+            let srv = self.srv.0;
+            let params = self.params.0;
+            let viewport = D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: self.width as f32,
+                Height: self.height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            (*ctx).OMSetRenderTargets(1, &rtv, ptr::null_mut());
+            (*ctx).OMSetBlendState(ptr::null_mut(), &[0.0; 4], 0xffff_ffff);
+            (*ctx).OMSetDepthStencilState(ptr::null_mut(), 0);
+            (*ctx).RSSetState(ptr::null_mut());
+            (*ctx).RSSetViewports(1, &viewport);
+            (*ctx).IASetInputLayout(ptr::null_mut());
+            (*ctx).IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            (*ctx).VSSetShader(self.vs.0, ptr::null(), 0);
+            (*ctx).PSSetShader(ps, ptr::null(), 0);
+            (*ctx).PSSetConstantBuffers(0, 1, &params);
+            (*ctx).PSSetShaderResources(0, 1, &srv);
+            (*ctx).Draw(3, 0);
+            let no_srv: *mut ID3D11ShaderResourceView = ptr::null_mut();
+            (*ctx).PSSetShaderResources(0, 1, &no_srv);
+            (*ctx).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
+            Ok(self.target.0)
+        }
+    }
+
+    unsafe fn ensure_target(&mut self, width: u32, height: u32, format: DXGI_FORMAT) -> io::Result<()> {
+        if !self.target.is_null()
+            && self.width == width
+            && self.height == height
+            && self.target_format == format
+        {
             return Ok(());
         }
         let desc = D3D11_TEXTURE2D_DESC {
@@ -280,7 +386,7 @@ impl HdrToSdr {
             Height: height,
             MipLevels: 1,
             ArraySize: 1,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            Format: format,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -303,6 +409,7 @@ impl HdrToSdr {
         )?;
         self.rtv = ComPtr(rtv);
         self.target = target;
+        self.target_format = format;
         self.width = width;
         self.height = height;
         Ok(())
@@ -504,6 +611,25 @@ unsafe fn find_d3d_compile() -> Result<D3DCompileFn, String> {
         return Err("D3DCompile not exported".into());
     }
     Ok(mem::transmute::<_, D3DCompileFn>(f))
+}
+
+unsafe fn create_pixel_shader(
+    device: *mut ID3D11Device,
+    compile: D3DCompileFn,
+    src: &str,
+) -> io::Result<ComPtr<ID3D11PixelShader>> {
+    let code = compile_shader(compile, src, b"ps_4_0\0")?;
+    let mut ps = ptr::null_mut();
+    check(
+        (*device).CreatePixelShader(
+            (*code.0).GetBufferPointer(),
+            (*code.0).GetBufferSize(),
+            ptr::null_mut(),
+            &mut ps,
+        ),
+        "CreatePixelShader",
+    )?;
+    Ok(ComPtr(ps))
 }
 
 unsafe fn compile_shader(

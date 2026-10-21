@@ -715,6 +715,7 @@ mod tests {
                 height: 1080,
                 quality: BR_BALANCED,
                 keyframe_interval: None,
+                hdr: false,
                 feature: serde_json::from_value(serde_json::json!({
                     "driver": "FFMPEG",
                     "vendor": vendor,

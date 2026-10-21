@@ -692,6 +692,8 @@ fn run(vs: VideoService) -> ResultType<()> {
     };
     #[cfg(feature = "vram")]
     c.set_output_texture(encoder.input_texture());
+    #[cfg(feature = "vram")]
+    c.set_hdr_passthrough(matches!(&encoder_cfg, EncoderCfg::VRAM(cfg) if cfg.hdr));
     #[cfg(target_os = "android")]
     if vs.source.is_monitor() {
         if let Err(e) = check_change_scale(encoder.is_hardware()) {
@@ -785,6 +787,13 @@ fn run(vs: VideoService) -> ResultType<()> {
         if Encoder::use_i444(&encoder_cfg) != use_i444 {
             log::info!("switch due to i444 changed");
             bail!("SWITCH");
+        }
+        #[cfg(feature = "vram")]
+        if let EncoderCfg::VRAM(cfg) = &encoder_cfg {
+            if Encoder::use_hdr(&cfg.feature) != cfg.hdr {
+                log::info!("switch due to hdr changed");
+                bail!("SWITCH");
+            }
         }
         #[cfg(all(windows, feature = "vram"))]
         if c.is_gdi() && encoder.input_texture() {
@@ -1118,6 +1127,7 @@ fn get_encoder_config(
         CodecFormat::H264 | CodecFormat::H265 => {
             #[cfg(feature = "vram")]
             if let Some(feature) = VRamEncoder::try_get(&c.device(), negotiated_codec) {
+                let hdr = Encoder::use_hdr(&feature);
                 return EncoderCfg::VRAM(VRamEncoderConfig {
                     device: c.device(),
                     width: c.width,
@@ -1125,6 +1135,7 @@ fn get_encoder_config(
                     quality,
                     feature,
                     keyframe_interval,
+                    hdr,
                 });
             }
             #[cfg(feature = "hwcodec")]
