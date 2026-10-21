@@ -92,17 +92,19 @@ float4 main(float4 pos : SV_Position) : SV_Target {
 }";
 
 // HDR pass-through: BT.2020 primaries, SMPTE 2084 (PQ) encoded, for the HDR10
-// encoder. The host's SDR white is placed at the BT.2408 reference white of
-// 203 nits so desktop UI lands at the viewer's SDR white and only content the
-// host shows brighter than SDR white uses the viewer's HDR headroom.
+// encoder. The host's SDR white is placed at `ref_white_nits`, the PQ level the
+// viewer shows as its SDR white, so desktop UI looks as on an SDR stream and
+// only content the host shows brighter than SDR white uses the viewer's HDR
+// headroom. macOS built-in displays put SDR white at PQ 100 nits, external HDR
+// displays at 203 (BT.2408), hence the option.
 const PQ_COMMON: &str = "\
-#define REF_WHITE_NITS 203.0
+cbuffer Params : register(b0) { float inv_sdr_white; float ref_white_nits; float2 pad; };
 float3 to_bt2020_pq(float3 rgb709, float scale) {
     float3 c = max(float3(
         dot(float3(0.6274040, 0.3292820, 0.0433136), rgb709),
         dot(float3(0.0690970, 0.9195400, 0.0113612), rgb709),
         dot(float3(0.0163916, 0.0880132, 0.8955950), rgb709)), 0.0);
-    float3 y = pow(saturate(c * (REF_WHITE_NITS * scale / 10000.0)), 0.1593017578125);
+    float3 y = pow(saturate(c * (ref_white_nits * scale / 10000.0)), 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
 }
 ";
@@ -111,7 +113,6 @@ float3 to_bt2020_pq(float3 rgb709, float scale) {
 // 1.0 on Advanced Color SDR desktops, where 1.0 already is reference white).
 const PS_PQ_FLOAT_SRC: &str = "\
 Texture2D<float4> src : register(t0);
-cbuffer Params : register(b0) { float inv_sdr_white; float3 pad; };
 float4 main(float4 pos : SV_Position) : SV_Target {
     return float4(to_bt2020_pq(src.Load(int3(pos.xy, 0)).rgb, inv_sdr_white), 1.0);
 }";
@@ -150,6 +151,7 @@ pub struct HdrToSdr {
     factory: ComPtr<IDXGIFactory1>,
     output6: ComPtr<IDXGIOutput6>,
     is_hdr: bool,
+    ref_white_nits: f32,
     // DISPLAYCONFIG units (1000 == 80 nits == scRGB 1.0). `None` when it could
     // not be read, in which case 80 nits is assumed until it can.
     sdr_white_level: Option<u32>,
@@ -228,7 +230,8 @@ impl HdrToSdr {
                      assuming 80 nits until it can"
                 );
             }
-            let init = params_data(sdr_white_level);
+            let ref_white_nits = reference_white_nits();
+            let init = params_data(sdr_white_level, ref_white_nits);
             let desc = D3D11_BUFFER_DESC {
                 ByteWidth: mem::size_of_val(&init) as _,
                 Usage: D3D11_USAGE_DEFAULT,
@@ -271,6 +274,7 @@ impl HdrToSdr {
                 factory,
                 output6,
                 is_hdr,
+                ref_white_nits,
                 sdr_white_level,
                 queried_at: Instant::now(),
             })
@@ -456,13 +460,24 @@ impl HdrToSdr {
             None
         };
         // A transiently unreadable level keeps the last known one.
-        if is_hdr == self.is_hdr && (level.is_none() || level == self.sdr_white_level) {
+        let level = if is_hdr == self.is_hdr {
+            level.or(self.sdr_white_level)
+        } else {
+            level
+        };
+        let ref_white_nits = reference_white_nits();
+        if is_hdr == self.is_hdr
+            && level == self.sdr_white_level
+            && ref_white_nits == self.ref_white_nits
+        {
             return;
         }
         log::info!(
-            "output changed: hdr {} -> {is_hdr}, sdr white level {:?} -> {level:?}",
+            "output changed: hdr {} -> {is_hdr}, sdr white level {:?} -> {level:?}, \
+             pass-through reference white {} -> {ref_white_nits} nits",
             self.is_hdr,
-            self.sdr_white_level
+            self.sdr_white_level,
+            self.ref_white_nits
         );
         if is_hdr && level.is_none() {
             log::warn!(
@@ -471,7 +486,8 @@ impl HdrToSdr {
         }
         self.is_hdr = is_hdr;
         self.sdr_white_level = level;
-        let data = params_data(level);
+        self.ref_white_nits = ref_white_nits;
+        let data = params_data(level, ref_white_nits);
         (*self.context.0).UpdateSubresource(
             self.params.0 as *mut _,
             0,
@@ -485,13 +501,24 @@ impl HdrToSdr {
 
 // `None` is either a non-HDR (WCG) output, where 1.0 already is the display's
 // reference white, or an HDR output whose level is unknown; both use 1.0.
-fn params_data(sdr_white_level: Option<u32>) -> [f32; 4] {
+fn params_data(sdr_white_level: Option<u32>, ref_white_nits: f32) -> [f32; 4] {
     [
         1000.0 / sdr_white_level.unwrap_or(1000) as f32,
-        0.0,
+        ref_white_nits,
         0.0,
         0.0,
     ]
+}
+
+/// PQ level of the host's SDR white in HDR pass-through, option
+/// `hdr-reference-white` in nits (48..=1000, default 100).
+fn reference_white_nits() -> f32 {
+    hbb_common::config::Config::get_option(base::config::keys::OPTION_HDR_REFERENCE_WHITE)
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|n| (48.0..=1000.0).contains(n))
+        .unwrap_or(100.0)
 }
 
 // FP16 desktop composition means either HDR (scene-referred, 1.0 == 80 nits)

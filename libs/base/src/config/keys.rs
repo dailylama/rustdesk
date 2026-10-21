@@ -91,6 +91,8 @@ pub const OPTION_ENABLE_TRUSTED_DEVICES: &str = "enable-trusted-devices";
 pub const OPTION_AV1_TEST: &str = "av1-test";
 // macOS controller: ask NVIDIA hosts for HDR10 video ("N" turns it off).
 pub const OPTION_ENABLE_HDR_PASSTHROUGH: &str = "enable-hdr-passthrough";
+// Windows host, HDR pass-through: PQ nits of the host's SDR white (default 100).
+pub const OPTION_HDR_REFERENCE_WHITE: &str = "hdr-reference-white";
 /// Maximum number of files allowed during a single file transfer request.
 ///
 /// Key: `file-transfer-max-files`.
