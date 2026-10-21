@@ -353,11 +353,14 @@ class FfiModel with ChangeNotifier {
           final hdrDisplays = parent.target?.textureModel.hdrDisplays;
           if (evt['on'] == 'true') {
             hdrDisplays?.add(display);
+            parent.target?.imageModel.setHdrRender(true);
             // HDR frames never reach the texture path, whose first frame is
             // what closes "waiting for image" and finishes canvas setup.
             await parent.target?.onEvent2UIRgba();
           } else {
             hdrDisplays?.remove(display);
+            parent.target?.imageModel
+                .setHdrRender(hdrDisplays?.isNotEmpty ?? false);
           }
         }
       } else if (name == 'switch_display') {
@@ -1946,7 +1949,18 @@ class ImageModel with ChangeNotifier {
     sessionId = parent.target!.sessionId;
   }
 
-  get useTextureRender => _useTextureRender;
+  // The HDR view lives in the texture render path, so HDR displays use it
+  // even when texture rendering is off.
+  bool _hdrRender = false;
+
+  get useTextureRender => _useTextureRender || _hdrRender;
+
+  setHdrRender(bool on) {
+    if (_hdrRender != on) {
+      _hdrRender = on;
+      notifyListeners();
+    }
+  }
 
   addCallbackOnFirstImage(Function(String) cb) => callbacksOnFirstImage.add(cb);
 
