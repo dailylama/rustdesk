@@ -1,0 +1,37 @@
+name: HDR viewer test (macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hdr
+    paths:
+      - "flutter/hdr_view/macos/**"
+      - "tools/hdr-viewer/**"
+      - ".github/workflows/hdr-viewer.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          mkdir -p out
+          for arch in arm64 x86_64; do
+            swiftc -O -target $arch-apple-macos11.0 \
+              -o out/hdr-viewer-$arch \
+              flutter/hdr_view/macos/Classes/HdrStreamRenderer.swift \
+              tools/hdr-viewer/main.swift
+          done
+          lipo -create -output out/hdr-viewer out/hdr-viewer-arm64 out/hdr-viewer-x86_64
+          rm out/hdr-viewer-arm64 out/hdr-viewer-x86_64
+          cp tools/hdr-viewer/hdr10_test.hevc out/
+          file out/hdr-viewer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hdr-viewer-macos
+          path: out/
