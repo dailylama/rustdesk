@@ -59,9 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "HDR viewer test"
         let view = NSView(frame: window.contentView!.bounds)
         view.autoresizingMask = [.width, .height]
-        // Layer-hosted view: assign the layer before enabling wantsLayer.
-        view.layer = renderer.layer
         view.wantsLayer = true
+        renderer.layer.frame = view.bounds
+        renderer.layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        renderer.layer.contentsScale = window.backingScaleFactor
+        view.layer?.addSublayer(renderer.layer)
         window.contentView = view
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -81,13 +83,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func tick() {
         guard !units.isEmpty else { return }
+        renderer.headroom = Float(window.screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
         renderer.submit(units[index])
         index = (index + 1) % units.count
         if Date().timeIntervalSince(lastReport) >= 2 {
             lastReport = Date()
             let headroom = window.screen?.maximumExtendedDynamicRangeColorComponentValue ?? 0
-            print("enqueued \(renderer.enqueued) dropped \(renderer.dropped) "
-                + "layer status \(renderer.layer.status.rawValue) EDR headroom \(headroom)")
+            print("presented \(renderer.presented) dropped \(renderer.dropped) EDR headroom \(headroom)")
         }
     }
 

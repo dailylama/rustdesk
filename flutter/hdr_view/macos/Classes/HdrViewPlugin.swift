@@ -37,12 +37,15 @@ final class HdrViewRegistry {
     }
 }
 
-/// Layer-backed view with the renderer's AVSampleBufferDisplayLayer as a
-/// sublayer sized to the view. It never takes mouse events, so Flutter keeps
-/// all input handling.
+/// Layer-backed view with the renderer's EDR CAMetalLayer as a sublayer sized
+/// to the view. It never takes mouse events, so Flutter keeps all input
+/// handling. While on screen it keeps the renderer's headroom and scale
+/// current.
 final class HdrNativeView: NSView {
     let key: String
     let renderer = HdrStreamRenderer()
+    private var headroomTimer: Timer?
+    private var loggedSize = CGSize.zero
 
     init(key: String) {
         self.key = key
@@ -66,12 +69,27 @@ final class HdrNativeView: NSView {
         fitLayer()
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        fitLayer()
+    }
+
     private func fitLayer() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        renderer.layer.contentsScale = window?.backingScaleFactor ?? 2
         renderer.layer.frame = bounds
         CATransaction.commit()
-        NSLog("hdr_view: %@ frame %.0fx%.0f", key, bounds.width, bounds.height)
+        if bounds.size != loggedSize {
+            loggedSize = bounds.size
+            NSLog("hdr_view: %@ frame %.0fx%.0f scale %.1f", key, bounds.width, bounds.height,
+                  renderer.layer.contentsScale)
+        }
+    }
+
+    private func updateHeadroom() {
+        let value = window?.screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1
+        renderer.headroom = Float(value)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -79,10 +97,17 @@ final class HdrNativeView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        headroomTimer?.invalidate()
+        headroomTimer = nil
         if window == nil {
             HdrViewRegistry.shared.remove(key, ifSame: renderer)
         } else {
             HdrViewRegistry.shared.set(key, renderer)
+            fitLayer()
+            updateHeadroom()
+            headroomTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                self?.updateHeadroom()
+            }
         }
     }
 }
