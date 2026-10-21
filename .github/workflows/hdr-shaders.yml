@@ -1,0 +1,34 @@
+name: HDR shader compile check (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - hdr
+    paths:
+      - "libs/scrap/src/dxgi/hdr.rs"
+      - "tools/hdr-shaders/**"
+      - ".github/workflows/hdr-shaders.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  fxc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile with fxc (same targets as hdr.rs)
+        shell: pwsh
+        run: |
+          python tools/hdr-shaders/extract.py libs/scrap/src/dxgi/hdr.rs hlsl
+          $fxc = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter fxc.exe |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -Last 1
+          Write-Host "fxc: $($fxc.FullName)"
+          $failed = 0
+          Get-ChildItem hlsl -Filter *.hlsl | ForEach-Object {
+            $target = if ($_.BaseName -eq 'vs') { 'vs_4_0' } else { 'ps_4_0' }
+            & $fxc.FullName /nologo /T $target /E main /Fo "$($_.FullName).cso" $_.FullName
+            if ($LASTEXITCODE -ne 0) { $failed++ ; Write-Host "FAILED: $($_.Name)" } else { Write-Host "ok: $($_.Name)" }
+          }
+          if ($failed -ne 0) { exit 1 }
