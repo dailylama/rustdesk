@@ -353,6 +353,9 @@ class FfiModel with ChangeNotifier {
           final hdrDisplays = parent.target?.textureModel.hdrDisplays;
           if (evt['on'] == 'true') {
             hdrDisplays?.add(display);
+            // HDR frames never reach the texture path, whose first frame is
+            // what closes "waiting for image" and finishes canvas setup.
+            await parent.target?.onEvent2UIRgba();
           } else {
             hdrDisplays?.remove(display);
           }
