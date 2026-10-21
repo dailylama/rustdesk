@@ -882,6 +882,28 @@ impl InvokeUiSession for FlutterHandler {
         self.on_rgba_soft_render(display, rgba);
     }
 
+    #[cfg(target_os = "macos")]
+    fn on_hdr_frames(&self, display: usize, frames: &EncodedVideoFrames) -> bool {
+        let mut taken = false;
+        for sid in self.session_handlers.read().unwrap().keys() {
+            let key = hdr::view_key(sid, display);
+            for frame in frames.frames.iter() {
+                taken |= hdr::submit(&key, &frame.data);
+            }
+        }
+        taken
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_hdr_display(&self, display: usize, on: bool) {
+        log::info!("hdr view for display {display}: {on}");
+        self.push_event(
+            "hdr_render",
+            &[("display", display.to_string()), ("on", on.to_string())],
+            &[],
+        );
+    }
+
     #[inline]
     #[cfg(feature = "vram")]
     fn on_texture(&self, display: usize, texture: *mut c_void) {
@@ -2411,5 +2433,43 @@ pub(super) mod async_tasks {
             super::APP_TYPE_MAIN,
             serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
         );
+    }
+}
+
+/// HDR10 frames on macOS go straight to the `hdr_view` plugin's native view,
+/// which decodes and presents them in EDR; see flutter/hdr_view.
+#[cfg(target_os = "macos")]
+pub(crate) mod hdr {
+    use super::*;
+    use std::ffi::{c_char, CString};
+
+    type HdrViewSubmit = unsafe extern "C" fn(*const c_char, *const u8, isize) -> bool;
+
+    lazy_static::lazy_static! {
+        static ref SUBMIT: Option<Symbol<'static, HdrViewSubmit>> = match &*TEXTURE_RGBA_RENDERER_PLUGIN {
+            Ok(lib) => match unsafe { lib.symbol::<HdrViewSubmit>("HdrViewSubmit") } {
+                Ok(sym) => Some(sym),
+                Err(e) => {
+                    log::error!("Failed to find symbol HdrViewSubmit, {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                log::error!("Failed to load self for HdrViewSubmit, {e}");
+                None
+            }
+        };
+    }
+
+    /// Must match the `viewKey` the Dart side gives `HdrView`.
+    pub fn view_key(session_id: &SessionID, display: usize) -> CString {
+        CString::new(format!("{session_id}-{display}")).unwrap_or_default()
+    }
+
+    pub fn submit(key: &CString, data: &[u8]) -> bool {
+        match &*SUBMIT {
+            Some(f) if !data.is_empty() => unsafe { f(key.as_ptr(), data.as_ptr(), data.len() as isize) },
+            _ => false,
+        }
     }
 }

@@ -347,6 +347,16 @@ class FfiModel with ChangeNotifier {
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
+      } else if (name == 'hdr_render') {
+        final display = int.tryParse(evt['display'] ?? '');
+        if (display != null) {
+          final hdrDisplays = parent.target?.textureModel.hdrDisplays;
+          if (evt['on'] == 'true') {
+            hdrDisplays?.add(display);
+          } else {
+            hdrDisplays?.remove(display);
+          }
+        }
       } else if (name == 'switch_display') {
         // switch display is kept for backward compatibility
         handleSwitchDisplay(evt, sessionId, peerId);

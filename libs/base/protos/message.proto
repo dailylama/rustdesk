@@ -33,6 +33,8 @@ message VideoFrame {
     EncodedVideoFrames av1s = 13;
   }
   int32 display = 14;
+  // h265s are HEVC Main10 BT.2020 PQ (HDR10), see SupportedDecoding.hdr.
+  bool hdr = 15;
 }
 
 message DisplayInfo {

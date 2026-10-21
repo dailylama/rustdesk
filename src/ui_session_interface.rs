@@ -1752,6 +1752,14 @@ pub trait InvokeUiSession: Send + Sync + Clone + 'static + Sized + Default {
     fn job_progress(&self, id: i32, file_num: i32, speed: f64, finished_size: f64);
     fn adapt_size(&self);
     fn on_rgba(&self, display: usize, rgba: &mut scrap::ImageRgb);
+    /// HDR10 frames go to a native view instead of the decoder. Returns false
+    /// when nothing took them (no HDR view for the display yet).
+    #[cfg(target_os = "macos")]
+    fn on_hdr_frames(&self, _display: usize, _frames: &EncodedVideoFrames) -> bool {
+        false
+    }
+    #[cfg(target_os = "macos")]
+    fn set_hdr_display(&self, _display: usize, _on: bool) {}
     fn msgbox(&self, msgtype: &str, title: &str, text: &str, link: &str, retry: bool);
     #[cfg(any(target_os = "android", target_os = "ios"))]
     fn clipboard(&self, content: String);

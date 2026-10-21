@@ -510,6 +510,15 @@ impl Decoder {
                 _ => {}
             }
         }
+        #[cfg(target_os = "macos")]
+        if decoding.ability_h265 > 0
+            && Config::get_option(base::config::keys::OPTION_ENABLE_HDR_PASSTHROUGH) != "N"
+        {
+            decoding.hdr = true;
+            if decoding.prefer == PreferCodec::Auto.into() {
+                decoding.prefer = PreferCodec::H265.into();
+            }
+        }
         decoding
     }
 

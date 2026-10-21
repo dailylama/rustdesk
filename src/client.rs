@@ -3973,6 +3973,37 @@ pub enum MediaData {
 
 pub type MediaSender = mpsc::Sender<MediaData>;
 
+/// HDR10 frames bypass the decoder and go to the session's native HDR view.
+/// Returns true when `vf` was handled here.
+#[cfg(target_os = "macos")]
+fn handle_hdr_frame<T: InvokeUiSession>(
+    session: &Session<T>,
+    vf: &VideoFrame,
+    display: usize,
+    hdr_display: &mut Option<usize>,
+) -> bool {
+    let frames = match &vf.union {
+        Some(video_frame::Union::H265s(frames)) if vf.hdr => frames,
+        _ => {
+            if let Some(d) = hdr_display.take() {
+                session.ui_handler.set_hdr_display(d, false);
+            }
+            return false;
+        }
+    };
+    if *hdr_display != Some(display) {
+        if let Some(d) = hdr_display.take() {
+            session.ui_handler.set_hdr_display(d, false);
+        }
+        session.ui_handler.set_hdr_display(display, true);
+        *hdr_display = Some(display);
+    }
+    if !session.ui_handler.on_hdr_frames(display, frames) {
+        log::trace!("HDR frame for display {display} dropped, view not ready");
+    }
+    true
+}
+
 /// Start video thread.
 ///
 /// # Arguments
@@ -4003,6 +4034,8 @@ pub fn start_video_thread<F, T>(
         let mut count = 0;
         let mut duration = std::time::Duration::ZERO;
         let mut skip_beginning = 0;
+        #[cfg(target_os = "macos")]
+        let mut hdr_display: Option<usize> = None;
         loop {
             if let Ok(data) = video_receiver.recv() {
                 match data {
@@ -4030,6 +4063,18 @@ pub fn start_video_thread<F, T>(
                         let display = vf.display as usize;
                         let start = std::time::Instant::now();
                         let format = CodecFormat::from(&vf);
+                        #[cfg(target_os = "macos")]
+                        if handle_hdr_frame(&session, &vf, display, &mut hdr_display) {
+                            fps_calculate(
+                                &mut skip_beginning,
+                                &fps,
+                                false,
+                                start.elapsed(),
+                                &mut count,
+                                &mut duration,
+                            );
+                            continue;
+                        }
                         if video_handler.is_none() {
                             let mut handler = VideoHandler::new(format, display);
                             let record_state = session.lc.read().unwrap().record_state;

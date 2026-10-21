@@ -24,6 +24,7 @@ import '../widgets/remote_toolbar.dart';
 import '../widgets/kb_layout_type_chooser.dart';
 import '../widgets/tabbar_widget.dart';
 import 'macos_full_screen_focus_recovery.dart';
+import 'package:hdr_view/hdr_view.dart';
 
 import 'package:flutter_hbb/native/custom_cursor.dart'
     if (dart.library.html) 'package:flutter_hbb/web/custom_cursor.dart';
@@ -1302,8 +1303,8 @@ class _ImagePaintState extends State<ImagePaint> {
     final isPeerLinux = ffiModel.isPeerLinux;
     final curDisplay = ffiModel.pi.currentDisplay;
     for (var i = 0; i < displays.length; i++) {
-      final textureId = widget.ffi.textureModel
-          .getTextureId(curDisplay == kAllDisplayValue ? i : curDisplay);
+      final displayIndex = curDisplay == kAllDisplayValue ? i : curDisplay;
+      final textureId = widget.ffi.textureModel.getTextureId(displayIndex);
       if (true) {
         // both "textureId.value != -1" and "true" seems ok
         final sizeScale = isPeerLinux ? s / displays[i].scale : s;
@@ -1313,11 +1314,20 @@ class _ImagePaintState extends State<ImagePaint> {
           width: displays[i].width * sizeScale,
           height: displays[i].height * sizeScale,
           child: _trackCursorDisplay(
-            Obx(() => Texture(
-                  textureId: textureId.value,
-                  filterQuality:
-                      isViewOriginal ? FilterQuality.none : FilterQuality.low,
-                )),
+            Obx(() => isMacOS &&
+                    widget.ffi.textureModel.hdrDisplays.contains(displayIndex)
+                ? HdrView(
+                    key: ValueKey('hdr-${widget.ffi.sessionId}-$displayIndex'),
+                    viewKey: '${widget.ffi.sessionId}-$displayIndex',
+                    onCreated: () => bind.sessionRefresh(
+                        sessionId: widget.ffi.sessionId,
+                        display: displayIndex),
+                  )
+                : Texture(
+                    textureId: textureId.value,
+                    filterQuality:
+                        isViewOriginal ? FilterQuality.none : FilterQuality.low,
+                  )),
             displays[i],
           ),
         ));

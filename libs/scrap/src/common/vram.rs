@@ -54,6 +54,7 @@ pub struct VRamEncoder {
     pub format: DataFormat,
     ctx: EncodeContext,
     bitrate: u32,
+    hdr: bool,
 }
 
 impl EncoderApi for VRamEncoder {
@@ -92,6 +93,7 @@ impl EncoderApi for VRamEncoder {
                         ctx,
                         format: config.feature.data_format,
                         bitrate,
+                        hdr: config.hdr,
                     }),
                     Err(_) => Err(anyhow!(format!("Failed to create encoder"))),
                 }
@@ -147,6 +149,7 @@ impl EncoderApi for VRamEncoder {
                 DataFormat::H265 => vf.set_h265s(frames),
                 _ => bail!("{:?} not supported", self.format),
             }
+            vf.hdr = self.hdr;
             Ok(vf)
         } else {
             Err(anyhow!("no valid frame"))

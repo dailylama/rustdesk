@@ -144,6 +144,8 @@ class TextureModel {
   final Map<int, _Control> _control = {};
   final Map<int, _PixelbufferTexture> _pixelbufferRenderTextures = {};
   final Map<int, _GpuTexture> _gpuRenderTextures = {};
+  // Displays whose frames are HDR10 and shown by the native HdrView (macOS).
+  final RxSet<int> hdrDisplays = RxSet<int>();
 
   TextureModel(this.parent);
 

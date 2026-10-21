@@ -1,0 +1,18 @@
+name: hdr_view
+description: Native HDR10 (HEVC Main10, BT.2020 PQ) remote screen view for macOS.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: '>=3.1.0 <4.0.0'
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      macos:
+        pluginClass: HdrViewPlugin

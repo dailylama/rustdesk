@@ -89,6 +89,8 @@ pub const OPTION_ENABLE_ANDROID_SOFTWARE_ENCODING_HALF_SCALE: &str =
     "enable-android-software-encoding-half-scale";
 pub const OPTION_ENABLE_TRUSTED_DEVICES: &str = "enable-trusted-devices";
 pub const OPTION_AV1_TEST: &str = "av1-test";
+// macOS controller: ask NVIDIA hosts for HDR10 video ("N" turns it off).
+pub const OPTION_ENABLE_HDR_PASSTHROUGH: &str = "enable-hdr-passthrough";
 /// Maximum number of files allowed during a single file transfer request.
 ///
 /// Key: `file-transfer-max-files`.
