@@ -891,6 +891,13 @@ impl InvokeUiSession for FlutterHandler {
                 taken |= hdr::submit(&key, &frame.data);
             }
         }
+        if !taken {
+            hbb_common::throttled_log!(
+                std::time::Duration::from_secs(5),
+                warn,
+                "HDR frames for display {display} not taken by the HDR view"
+            );
+        }
         taken
     }
 

@@ -63,8 +63,15 @@ public final class HdrStreamRenderer {
         }
 
         if waitingForKeyframe {
-            guard isKey else { dropped += 1; return false }
+            guard isKey else {
+                dropped += 1
+                if dropped == 1 || dropped % 120 == 0 {
+                    NSLog("hdr_view: waiting for keyframe, dropped %d", dropped)
+                }
+                return false
+            }
             waitingForKeyframe = false
+            NSLog("hdr_view: keyframe, format description %@", formatDescription == nil ? "missing" : "ok")
         }
         guard let fd = formatDescription, !slices.isEmpty,
               let sample = Self.makeSampleBuffer(slices, format: fd, isKey: isKey) else {
@@ -73,6 +80,10 @@ public final class HdrStreamRenderer {
         }
         layer.enqueue(sample)
         enqueued += 1
+        if enqueued == 1 || enqueued % 600 == 0 {
+            NSLog("hdr_view: enqueued %d, layer status %d, bounds %.0fx%.0f",
+                  enqueued, layer.status.rawValue, layer.bounds.width, layer.bounds.height)
+        }
         return true
     }
 

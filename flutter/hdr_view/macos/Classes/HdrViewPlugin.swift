@@ -20,6 +20,16 @@ final class HdrViewRegistry {
         return renderers[key]
     }
 
+    private var missingLogged: Set<String> = []
+
+    func logMissing(_ key: String) {
+        lock.lock()
+        let first = missingLogged.insert(key).inserted
+        let known = Array(renderers.keys)
+        lock.unlock()
+        if first { NSLog("hdr_view: no view for key %@, views: %@", key, known.description) }
+    }
+
     func remove(_ key: String, ifSame renderer: HdrStreamRenderer) {
         lock.lock()
         if renderers[key] === renderer { renderers[key] = nil }
@@ -27,8 +37,9 @@ final class HdrViewRegistry {
     }
 }
 
-/// Layer-hosted view around the renderer's AVSampleBufferDisplayLayer. It
-/// never takes mouse events, so Flutter keeps all input handling.
+/// Layer-backed view with the renderer's AVSampleBufferDisplayLayer as a
+/// sublayer sized to the view. It never takes mouse events, so Flutter keeps
+/// all input handling.
 final class HdrNativeView: NSView {
     let key: String
     let renderer = HdrStreamRenderer()
@@ -36,12 +47,32 @@ final class HdrNativeView: NSView {
     init(key: String) {
         self.key = key
         super.init(frame: .zero)
-        layer = renderer.layer
         wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.addSublayer(renderer.layer)
         HdrViewRegistry.shared.set(key, renderer)
+        NSLog("hdr_view: created view %@", key)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        fitLayer()
+    }
+
+    override func layout() {
+        super.layout()
+        fitLayer()
+    }
+
+    private func fitLayer() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        renderer.layer.frame = bounds
+        CATransaction.commit()
+        NSLog("hdr_view: %@ frame %.0fx%.0f", key, bounds.width, bounds.height)
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override var acceptsFirstResponder: Bool { false }
@@ -78,6 +109,7 @@ public class HdrViewPlugin: NSObject, FlutterPlugin {
 @_cdecl("HdrViewSubmit")
 public func HdrViewSubmit(_ key: UnsafePointer<CChar>, _ data: UnsafePointer<UInt8>, _ len: Int) -> Bool {
     guard len > 0, let renderer = HdrViewRegistry.shared.get(String(cString: key)) else {
+        HdrViewRegistry.shared.logMissing(String(cString: key))
         return false
     }
     let accessUnit = Data(bytes: data, count: len)
